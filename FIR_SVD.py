@@ -405,8 +405,9 @@ def calc_num_svd_coefs(W,R,threshold):
     U , S , VT = np.linalg.svd(W_p)
     R_compressed = rank_choser(S,threshold)
     num_coefs = R_compressed* (U.shape[0] + VT.shape[0])
+    num_ops = (2*(U.shape[0] + VT.shape[0])*R_compressed )+ R_compressed - 1 
     #print(f'{S.shape = },{W_p.shape = }, {R_compressed = } , {VT.shape[0] = }, {num_coefs = }')
-    return num_coefs , R_compressed
+    return num_coefs ,num_ops, R_compressed
     
 
 #%%
@@ -419,6 +420,7 @@ for i in range(l2):
 print(r_tests)
 
 n_coefs = []
+n_ops = []
 R_comps = []
 
 n_coefs.append(100000)
@@ -426,8 +428,9 @@ n_coefs.append(100000)
 R_comps.append(100000)
 R_comps.append(100000)
 for R in range(2,1025):
-    n_coef , R_comp = calc_num_svd_coefs(taps,R,0.05)
+    n_coef ,n_op, R_comp = calc_num_svd_coefs(taps,R,0.05)
     n_coefs.append(n_coef)
+    n_ops.append(n_op)
     R_comps.append(R_comp)
 
 # %%
@@ -466,7 +469,7 @@ compare_spectrums(impulse_filtered,filtered_signal,fs,f"Filters Impulse Response
 
 # %%
 # Download coefficients from Viga
-def analyze_FIR_compression(file,fs,threshold,taps,notFILE):
+def analyze_FIR_compression(file,fs,threshold,taps,notFILE,parameter):
 
     if (notFILE):
         wsec_impulse = taps
@@ -474,6 +477,7 @@ def analyze_FIR_compression(file,fs,threshold,taps,notFILE):
         wsec_impulse = np.loadtxt(file, delimiter=',')
     
     n_coefs = []
+    n_ops = []
     R_comps = []
     n_coefs.append(100000)
     n_coefs.append(100000)
@@ -481,14 +485,19 @@ def analyze_FIR_compression(file,fs,threshold,taps,notFILE):
     R_comps.append(100000)
 
     for R in range(2,501):
-        n_coef , R_comp = calc_num_svd_coefs(wsec_impulse,R,threshold)
+        n_coef , n_op , R_comp = calc_num_svd_coefs(wsec_impulse,R,threshold)
         n_coefs.append(n_coef)
+        n_ops.append(n_op)
         R_comps.append(R_comp)
     plt.plot(n_coefs[2:])
     plt.show()
     fs = fs
-    R_chosen = np.argmin(n_coefs)
-    num_coef = np.min(n_coefs)
+    #Set parameter = 0 to check for Compression with less coefficients, 1 for less operations
+    param_chosen = n_coefs if parameter == 0 else n_ops
+    
+    R_chosen = np.argmin(param_chosen)
+    num_coef = n_coefs[R_chosen]
+    num_op   = n_ops[R_chosen]
     S_decomp = R_comps[R_chosen]
 
     print(R_chosen,S_decomp)
@@ -523,14 +532,14 @@ def analyze_FIR_compression(file,fs,threshold,taps,notFILE):
         svd_filt_US = signal.lfilter(US[:,i], 1.0, svd_filt_Vt)
 
         impulse_filtered+=svd_filt_US
-    error = compare_spectrums_phase(impulse_filtered,filtered_signal,fs,f"Filters Impulse Response N branches = {S_decomp} N coefs = {num_coef}")
+    error = compare_spectrums_phase(impulse_filtered,filtered_signal,fs,f"Filters Impulse Response N branches = {S_decomp} N coefs = {num_coef} N ops = {num_op}")
     print(error)
     plt.plot(S)
 # %%
-analyze_FIR_compression('ActVibModules/wsecimpulse.txt',400,0.1,0,False)
+analyze_FIR_compression('./ActVibModules/wsecimpulse.txt',400,0.1,0,False,1)
 # %%
-analyze_FIR_compression('ActVibModules/wfbkimpulse.txt',400,0.01,0,False)
+analyze_FIR_compression('./ActVibModules/wfbkimpulse.txt',400,0.01,0,False,0)
 
 # %%
-analyze_FIR_compression(None,800,0.1,taps,True)
+analyze_FIR_compression(None,800,0.1,taps,True,0)
 # %%
