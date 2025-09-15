@@ -208,7 +208,7 @@ def analyze_FIR_compression(file,fs,threshold,taps,notFILE,parameter):
 
     for i in range(S_decomp):
         vd = np.kron(VT[i,:],I).reshape(R_chosen*kron_total)
-        svd_filt_Vt = signal.lfilter(vd, 1.0, impulse_signal)
+        svd_filt_Vt = signal.lfilter(vd[:kron_total], 1.0, impulse_signal)
         svd_filt_US = signal.lfilter(US[:,i], 1.0, svd_filt_Vt)
 
         impulse_filtered+=svd_filt_US
@@ -216,7 +216,10 @@ def analyze_FIR_compression(file,fs,threshold,taps,notFILE,parameter):
     print(error)
     #plt.plot(S)
 # %%
-analyze_FIR_compression('./ActVibModules/wsecimpulse.txt',400,0.1,0,False,2)
+analyze_FIR_compression('../../ActVibModules/wsecimpulse.txt',400,0.1,0,False,0)
+#analyze_FIR_compression('./ActVibModules/wsecimpulse.txt',400,0.1,0,False,1)
+#analyze_FIR_compression('./ActVibModules/wsecimpulse.txt',400,0.1,0,False,2)
+
 # %%
 analyze_FIR_compression('./ActVibModules/wfbkimpulse.txt',400,0.01,0,False,0)
 

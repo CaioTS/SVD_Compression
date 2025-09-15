@@ -187,8 +187,89 @@ compare_spectrums(filtered_signal,np.array(y),fs,"Test with FIRSVD class")
 
 # %%
 """
-Remember to create outside of the class the proper buffer aligment
+Separate the weights to be used in the wptr based on fixed B,R and C
+"""
 
-Organize weights from SVD as the class needs
+def format_W(W,R):
+    n_pad = W.shape[0] % R
+    W_pad = np.zeros(int(W.shape[0] + (R - n_pad)))
+    W_pad[:W.shape[0]] = W
+    C = W_pad.shape[0]/R
+    lower_dim = min(R,C)
+    return  W_pad.reshape((int(lower_dim),-1),order = 'F')
+
+def compare_spectrums(signal,ref, fs, title):
+    n = len(signal)
+    yfs = fft(signal)
+    xf = fftfreq(n, 1/fs)[:n//2]
+    plt.plot(xf, 2.0/n * np.abs(yfs[0:n//2]),label = 'Signal Filter Response',linewidth=3)
+
+    n = len(ref)
+    yfr = fft(ref)
+    plt.plot(xf, 2.0/n * np.abs(yfr[0:n//2]),label= 'Reference Filter Response',linewidth=2)
+    plt.yscale('log')
+    plt.title(title)
+    plt.xlabel('Frequency (Hz)')
+    plt.ylabel('Magnitude')
+    plt.grid(True)
+    plt.legend()
+    plt.xlim(0, fs/2)
+    plt.show()
+    norm = np.linalg.norm(yfr)
+    print(f"{norm = }")
+    return abs(np.sum(((yfs - yfr)**2)/len(xf)))/norm
+
+#Will try for B = 3 | C = 48 | R = 42 
+wsec_impulse = np.loadtxt("../../ActVibModules/wsecimpulse.txt", delimiter=',')
+
+n = np.arange(wsec_impulse.shape[0]) # From -5 to 5
+# Create an array of zeros with the same length as n
+impulse_signal = np.zeros_like(n, dtype=float)
+impulse_signal[0] = 1
+filtered_signal = signal.lfilter(wsec_impulse,1.0,impulse_signal)
+
+R_chosen = 42
+C = 48
+B = 3
+
+FIR_ch = format_W(wsec_impulse,R_chosen)
+print(FIR_ch.shape)
+U , S ,VT = np.linalg.svd(FIR_ch)
+
+SM = np.zeros((U.shape[0],VT.shape[0]))
+np.fill_diagonal(SM,S)
+US = U @ SM
+C_weights = []
+R_weights = []
+kron_total = U.shape[0] * VT.shape[0]
+print(kron_total,R_chosen,S.shape,VT.shape)
+I = np.identity(R_chosen)
+impulse_filtered = np.zeros_like(impulse_signal)
+for i in range(B):
+    vd = np.kron(VT[i,:],I)
+    print(f"{vd.shape = } = {VT[i,:].shape = } x {I.shape}")
+    vd = vd.reshape(R_chosen*kron_total)
+    
+    C_weights.append(vd[:kron_total][vd[:kron_total] != 0]) #Only append non zero numbers
+    svd_filt_Vt = signal.lfilter(vd[:kron_total], 1.0, impulse_signal)
+    svd_filt_US = signal.lfilter(US[:,i], 1.0, svd_filt_Vt)
+    R_weights.append(US[:,i])
+    impulse_filtered+=svd_filt_US
+error = compare_spectrums(impulse_filtered,filtered_signal,fs,f"Wsec")
+
+# %%
+"""
+Organize wptr based upon SVD rank decomposition
+"""
+print(C_weights[0].shape,R_weights[0].shape)
+
+result = [np.concatenate([a, b]) for a, b in zip(C_weights, R_weights)]
+wptr = np.array(result).reshape(B*(R_chosen + C))
+print(wptr.shape)
+
+plt.plot(wptr)
+# %%
+"""
+Create Circular buffer with R sparsity
 
 """
