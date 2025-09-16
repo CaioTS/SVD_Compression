@@ -53,7 +53,11 @@ class FIRFilter:
         for k in range(self.N):
             self.y += self.x[(self.ptr - k + self.N) % self.N] * self.wptr[k]
         return self.y
-    
+    def filter_window(self,wn):
+        self.y = 0
+        for k in range(self.N):
+            self.y += wn[k] *  self.wptr[k]
+        return self.y
 #%%
 # Filter parameters
 fs = 800  # Sampling frequency (Hz)
@@ -107,6 +111,7 @@ class FIRSVDFilter:
         self.R  =  R # Rows
         self.C  =  C # Collunms
         self.B  =  B # Branches
+        self.x  = ptrx
         self.filters = [] #Stores all filters class
         self.v_ptr   = [] # Buffers of intermdiate filter exit
         self.y  =  0
@@ -126,64 +131,32 @@ class FIRSVDFilter:
 
     def reset(self):
         self.y = 0
-
+        for k in range(self.N):
+            self.x[k] = 0
+        self.ptr = self.N - 1
+    
     def filter(self, xn):
+        self.ptr += 1
+        if self.ptr >= self.R*self.C:
+            self.ptr = 0
+        self.x[self.ptr] = xn
         self.y = 0
+        wn = np.zeros(self.C)
+        ptr_wn = self.ptr
+        for i in range(self.C):
+
+            if (ptr_wn < 0):
+                ptr_wn = (self.R*self.C) + ptr_wn
+
+            wn[i] = self.x[ptr_wn]
+            ptr_wn-=self.R
+
         for i in range(self.B):
-           tmp = self.filters[2*i].filter(xn)
+           tmp = self.filters[2*i].filter_window(wn)
            self.y += self.filters[2*i+1].filter(tmp)
         return self.y
            
-# %%
-"""
-- Test a dual filter with  random weights and see if this 
-implementation matches the one with scipy
 
-"""
-
-# Filter parameters
-fs = 800  # Sampling frequency (Hz)
-fc1 = 100  # Cutoff frequency (Hz)
-numtaps1 = 201  # Number of filter taps (odd number for better performance)
-
-fc2 = 250
-numtaps2 = 101
-
-#  Generate low-pass FIR filter using window method
-taps_low  = signal.firwin(numtaps1, fc1, fs=fs, window='hamming')
-taps_low1 = signal.firwin(numtaps2, fc1 + 50, fs=fs, window='hamming')
-#  Generate High-pass FIR filter using window method
-taps_high  = signal.firwin(numtaps1, fc2, fs=fs, window='hamming',pass_zero=False)
-taps_high1 = signal.firwin(numtaps2, fc2 - 50, fs=fs, window='hamming',pass_zero=False)
-
-n = np.arange(taps_low.shape[0]) 
-# Create an array of zeros with the same length as n
-impulse_signal = np.zeros_like(n, dtype=float)
-impulse_signal[0] = 0.5*numtaps
-
-filtered_low_signal_0 = signal.lfilter(taps_low,1.0,impulse_signal)
-filtered_low_signal = signal.lfilter(taps_low,1.0,filtered_low_signal_0)
-
-filtered_high_signal0 = signal.lfilter(taps_high,1.0,impulse_signal)
-filtered_high_signal = signal.lfilter(taps_high,1.0,filtered_high_signal0)
-
-filtered_signal = filtered_low_signal + filtered_high_signal
-compare_spectrums(impulse_signal,filtered_signal,fs,"Theoric")
-compare_spectrums(filtered_high_signal,filtered_low_signal,fs,"Branches")
-
-ptrw = np.concatenate((taps_low,taps_low1,taps_high,taps_high1))
-ptrw_x  = np.zeros_like(taps)
-
-
-print(len(ptrw))
-filt = FIRSVDFilter(len(ptrw),ptrw,ptrw_x,numtaps2,numtaps1,2)
-
-
-y = []
-for x in impulse_signal:
-    y.append(filt.filter(x))
-
-compare_spectrums(filtered_signal,np.array(y),fs,"Test with FIRSVD class")
 
 # %%
 """
@@ -265,11 +238,74 @@ print(C_weights[0].shape,R_weights[0].shape)
 
 result = [np.concatenate([a, b]) for a, b in zip(C_weights, R_weights)]
 wptr = np.array(result).reshape(B*(R_chosen + C))
-print(wptr.shape)
 
-plt.plot(wptr)
 # %%
 """
-Create Circular buffer with R sparsity
+Test FIRSVDFilter with SVD from Wsec weights
+"""
+ptrw_x  = np.zeros(R_chosen*C)
+print(ptrw_x.shape)
+SVD_filter = FIRSVDFilter(len(wptr),wptr,ptrw_x,R_chosen,C,B)
+y = []
+
+test_signal = np.zeros_like(impulse_signal)
+
+for x in impulse_signal:
+    y.append(SVD_filter.filter(x))
+
+compare_spectrums(impulse_filtered,np.array(y),fs,f"Wsec")
+# %%
+
+
+# %%
+"""
+(DOES NOT WORK ANIYMORE BECAUSE OF SPARSE FILTER ASSUMPTION)
+- Test a dual filter with  random weights and see if this 
+implementation matches the one with scipy 
 
 """
+
+# Filter parameters
+fs = 800  # Sampling frequency (Hz)
+fc1 = 100  # Cutoff frequency (Hz)
+numtaps1 = 201  # Number of filter taps (odd number for better performance)
+
+fc2 = 250
+numtaps2 = 101
+
+#  Generate low-pass FIR filter using window method
+taps_low  = signal.firwin(numtaps1, fc1, fs=fs, window='hamming')
+taps_low1 = signal.firwin(numtaps2, fc1 + 50, fs=fs, window='hamming')
+#  Generate High-pass FIR filter using window method
+taps_high  = signal.firwin(numtaps1, fc2, fs=fs, window='hamming',pass_zero=False)
+taps_high1 = signal.firwin(numtaps2, fc2 - 50, fs=fs, window='hamming',pass_zero=False)
+
+n = np.arange(taps_low.shape[0]) 
+# Create an array of zeros with the same length as n
+impulse_signal = np.zeros_like(n, dtype=float)
+impulse_signal[0] = 0.5*numtaps
+
+filtered_low_signal_0 = signal.lfilter(taps_low,1.0,impulse_signal)
+filtered_low_signal = signal.lfilter(taps_low,1.0,filtered_low_signal_0)
+
+filtered_high_signal0 = signal.lfilter(taps_high,1.0,impulse_signal)
+filtered_high_signal = signal.lfilter(taps_high,1.0,filtered_high_signal0)
+
+filtered_signal = filtered_low_signal + filtered_high_signal
+compare_spectrums(impulse_signal,filtered_signal,fs,"Theoric")
+compare_spectrums(filtered_high_signal,filtered_low_signal,fs,"Branches")
+
+ptrw = np.concatenate((taps_low,taps_low1,taps_high,taps_high1))
+ptrw_x  = np.zeros_like(taps)
+
+
+print(len(ptrw))
+filt = FIRSVDFilter(len(ptrw),ptrw,ptrw_x,numtaps2,numtaps1,2)
+
+
+y = []
+for x in impulse_signal:
+    y.append(filt.filter(x))
+
+compare_spectrums(filtered_signal,np.array(y),fs,"Test with FIRSVD class")
+# %%
