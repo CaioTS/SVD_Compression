@@ -3,9 +3,7 @@ import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
 
-from Algorithms.FIR_FILTER import FIRFilter
 from CantileverBeam import CantileverBeam
-# from Filters import FIR
 from Adaptive import FIRNLMS
 from AdaptiveOO import FIRFxNLMS, FIR
 
@@ -27,7 +25,7 @@ referencepos = 75 # Position of the acceleration measurement at the beam.
 controlpos = 60 # Position of the control force
 errorpos = 95 # Position of the error acceleration measurement in the beam
 
-firmem = 1000 # Number of samples for the secondary and feedback paths
+firmem = 2000 # Number of samples for the secondary and feedback paths
 
 
 # %% Creating Beam instance with 100 points:
@@ -176,7 +174,7 @@ controller = FIRFxNLMS(mem=300, memsec=firmem) # Create the controller
 # controller.setSecondary(wsecimpulse) # Set the secondary path
 controller.setSecondary(FIR(wsecimpulse)) # Set the secondary path
 controller.setAlgorithm('NLMS') # Set the algorithm to NLMS
-controller.mu = 0.001 # Set the step size
+controller.mu = 0.01 # Set the step size
 controller.psi = 1e-3 # Set the regularization parameter
 controller.reset() # Reset the controller
 
@@ -212,10 +210,13 @@ fig.add_scatter(x=th, y=xh, name="Perturbation force (N)", mode="lines")
 fig.add_scatter(x=th, y=err, name="Beam accelaration (m/s²)", mode="lines")
 fig.show()
 
+errwocompression = err.copy()
+
 
 
 # %% FILTER COMPRESSION
 
+# Matrix formatting with zero padding:
 def format_W(W,R):
     n_pad = W.shape[0] % R
     W_pad = np.zeros(int(W.shape[0] + (R - n_pad)))
@@ -224,37 +225,7 @@ def format_W(W,R):
     lower_dim = min(R,C)
     return  W_pad.reshape((int(lower_dim),-1),order = 'F')
 
-# %%
-print("Shape for wsecimpulse: ",wsecimpulse.shape)
-C_chosen = 50
-B = 3
-
-W = format_W(wsecimpulse,C_chosen)
-print(f'{W.shape = }')
-R = W.shape[0]
-U,S,VT = np.linalg.svd(W)
-
-SM = np.zeros((R,C_chosen))
-np.fill_diagonal(SM,S)
-US = U @ SM
-C_weights = np.zeros((B,VT.shape[1]))
-R_weights = np.zeros((B,U.shape[0]))
-print(f'{C_chosen = }\n',
-      f'{R = }\n',
-      f'{S.shape = }\n',
-      f'{U.shape = }\n',
-      f'{VT.shape = }\n')
-for i in range(B):
-    C_weights[i,:] = VT.T[:,i]
-    R_weights[i,:] = US[:,i]
-
-print(f'{C_weights.shape = }')
-print(f'{R_weights.shape = }')
-
-px.line(y=S, title='Singular values of the secondary path').show()
-
-# %%
-
+# FIRSVD Implementation: 
 class FIRSVDFilterPy(FIR):
     def __init__(self, C_weights, R_weights):
         self.R  =  R_weights.shape[1] # Rows
@@ -283,7 +254,37 @@ class FIRSVDFilterPy(FIR):
         self.y = np.sum(self.youts)
         return self.y
 
-# %%
+# %% Secondary path compression:
+
+print("Shape for wsecimpulse: ",wsecimpulse.shape)
+C_chosen = 50
+B = 3
+
+W = format_W(wsecimpulse,C_chosen)
+print(f'{W.shape = }')
+R = W.shape[0]
+U,S,VT = np.linalg.svd(W)
+
+SM = np.zeros((R,C_chosen))
+np.fill_diagonal(SM,S)
+US = U @ SM
+C_weights = np.zeros((B,VT.shape[1]))
+R_weights = np.zeros((B,U.shape[0]))
+print(f'{C_chosen = }\n',
+      f'{R = }\n',
+      f'{S.shape = }\n',
+      f'{U.shape = }\n',
+      f'{VT.shape = }\n')
+for i in range(B):
+    C_weights[i,:] = VT.T[:,i]
+    R_weights[i,:] = US[:,i]
+
+print(f'{C_weights.shape = }')
+print(f'{R_weights.shape = }')
+print(f'Total number of coefficients: {C_weights.size + R_weights.size} vs {wsecimpulse.size} ({100*(1 - (C_weights.size + R_weights.size)/wsecimpulse.size):.2f}% reduction)')
+
+px.line(y=S, title='Singular values of the secondary path').show()
+
 y = np.zeros(firmem)
 firsvdsec = FIRSVDFilterPy(C_weights, R_weights)
 firsvdsec.reset()
@@ -296,6 +297,53 @@ fig.add_scatter(y=wsecimpulse, name="ideal", mode="lines")
 fig.add_scatter(y=y, name="FIRSVDFilter2", mode="lines")
 fig.show()
 
+# %% Feedback path compression:
+
+print("Shape for wfbkimpulse: ",wfbkimpulse.shape)
+C_chosen = 50
+B = 3
+
+W = format_W(wfbkimpulse,C_chosen)
+print(f'{W.shape = }')
+R = W.shape[0]
+U,S,VT = np.linalg.svd(W)
+
+SM = np.zeros((R,C_chosen))
+np.fill_diagonal(SM,S)
+US = U @ SM
+C_weightsfbk = np.zeros((B,VT.shape[1]))
+R_weightsfbk = np.zeros((B,U.shape[0]))
+print(f'{C_chosen = }\n',
+      f'{R = }\n',
+      f'{S.shape = }\n',
+      f'{U.shape = }\n',
+      f'{VT.shape = }\n')
+for i in range(B):
+    C_weightsfbk[i,:] = VT.T[:,i]
+    R_weightsfbk[i,:] = US[:,i]
+
+print(f'{C_weightsfbk.shape = }')
+print(f'{R_weightsfbk.shape = }')
+print(f'Total number of coefficients: {C_weightsfbk.size + R_weightsfbk.size} vs {wfbkimpulse.size} ({100*(1 - (R_weightsfbk.size + R_weightsfbk.size)/wfbkimpulse.size):.2f}% reduction)')
+
+px.line(y=S, title='Singular values of the feedback path').show()
+
+y = np.zeros(firmem)
+firsvdfbk = FIRSVDFilterPy(C_weightsfbk, R_weightsfbk)
+firsvdfbk.reset()
+y[0] = firsvdfbk.filterstep(1.0)
+for k in range(1,firmem):
+    y[k] = firsvdfbk.filterstep(0.0)
+
+fig = px.line(title='Impulse response from FIRSVDFilterPy')
+fig.add_scatter(y=wfbkimpulse, name="ideal", mode="lines")
+fig.add_scatter(y=y, name="FIRSVDFilter2", mode="lines")
+fig.show()
+
+
+# %%
+
+
 # %%
 maxtime = 120.0
 nsteps = int(maxtime * fs) # Total number of steps
@@ -307,11 +355,12 @@ controller = FIRFxNLMS(mem=300, memsec=firmem) # Create the controller
 firsvdsec.reset()
 controller.setSecondary(firsvdsec) # Set the secondary path
 controller.setAlgorithm('NLMS') # Set the algorithm to NLMS
-controller.mu = 0.001 # Set the step size
+controller.mu = 0.01 # Set the step size
 controller.psi = 1e-3 # Set the regularization parameter
 controller.reset() # Reset the controller
 
-feedbackfilter = FIR(wfbkimpulse) # Create the feedback filter
+# feedbackfilter = FIR(wfbkimpulse) # Create the feedback filter
+feedbackfilter = firsvdfbk
 feedbackfilter.reset() # Reset the filter
 
 vibfreq = 12.0 # Hertz
@@ -340,6 +389,10 @@ for k in range(nsteps):
 # Plotting the results:
 fig = px.line()
 fig.add_scatter(x=th, y=xh, name="Perturbation force (N)", mode="lines")
+fig.add_scatter(x=th, y=errwocompression, name="Accel. w.o. compr. (m/s²)", mode="lines")
 fig.add_scatter(x=th, y=err, name="Beam accelaration (m/s²)", mode="lines")
 fig.show()
+
+print(np.sum((err-errwocompression)**2))
+
 # %%
