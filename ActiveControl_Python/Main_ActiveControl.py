@@ -342,9 +342,6 @@ fig.show()
 
 
 # %%
-
-
-# %%
 maxtime = 120.0
 nsteps = int(maxtime * fs) # Total number of steps
 vibstart = 0.0 # Start time of the vibration
@@ -395,4 +392,112 @@ fig.show()
 
 print(np.sum((err-errwocompression)**2))
 
+
+
+# %% Let's try to use the basis from WK in WS:
+print("Shape for wfbkimpulse: ",wfbkimpulse.shape)
+C_chosen = 50
+B = 3
+
+W = format_W(wfbkimpulse,C_chosen)
+print(f'{W.shape = }')
+R = W.shape[0]
+U,S,VT = np.linalg.svd(W)
+
+SM = np.zeros((R,C_chosen))
+np.fill_diagonal(SM,S)
+US = U @ SM
+C_weightsfbk = np.zeros((B,VT.shape[1]))
+R_weightsfbk = np.zeros((B,U.shape[0]))
+print(f'{C_chosen = }\n',
+      f'{R = }\n',
+      f'{S.shape = }\n',
+      f'{U.shape = }\n',
+      f'{VT.shape = }\n')
+for i in range(B):
+    C_weightsfbk[i,:] = VT.T[:,i]
+    R_weightsfbk[i,:] = US[:,i]
+
+print(f'{C_weightsfbk.shape = }')
+print(f'{R_weightsfbk.shape = }')
+print(f'Total number of coefficients: {C_weightsfbk.size + R_weightsfbk.size} vs {wfbkimpulse.size} ({100*(1 - (R_weightsfbk.size + R_weightsfbk.size)/wfbkimpulse.size):.2f}% reduction)')
+
+px.line(y=S, title='Singular values of the feedback path').show()
+
+y = np.zeros(firmem)
+firsvdfbk = FIRSVDFilterPy(C_weightsfbk, R_weightsfbk)
+firsvdfbk.reset()
+y[0] = firsvdfbk.filterstep(1.0)
+for k in range(1,firmem):
+    y[k] = firsvdfbk.filterstep(0.0)
+
+fig = px.line(title='Impulse response from FIRSVDFilterPy')
+fig.add_scatter(y=wfbkimpulse, name="ideal", mode="lines")
+fig.add_scatter(y=y, name="FIRSVDFilter2", mode="lines")
+fig.show()
+
+# %%
+Wsec = format_W(wsecimpulse,C_chosen)
+USsec = Wsec @ np.linalg.inv(VT)
+px.line(y=(USsec**2).sum(axis=0), title='Energy of U branchs for the secondary path').show()
+
+C_weightssec = np.zeros((B,VT.shape[1]))
+R_weightssec = np.zeros((B,U.shape[0]))
+for i in range(B):
+    C_weightssec[i,:] = VT.T[:,i]
+    R_weightssec[i,:] = USsec[:,i]
+
+print(f'{C_weightssec.shape = }')
+print(f'{R_weightssec.shape = }')
+print(f'Total number of coefficients: {C_weightssec.size + R_weightssec.size} vs {wsecimpulse.size} ({100*(1 - (C_weightssec.size + R_weightssec.size)/wsecimpulse.size):.2f}% reduction)')
+
+
+y = np.zeros(firmem)
+firsvdsec = FIRSVDFilterPy(C_weightssec, R_weightssec)
+firsvdsec.reset()
+y[0] = firsvdsec.filterstep(1.0)
+for k in range(1,firmem):
+    y[k] = firsvdsec.filterstep(0.0)
+
+fig = px.line(title='Impulse response from FIRSVDFilterPy')
+fig.add_scatter(y=wsecimpulse, name="ideal", mode="lines")
+fig.add_scatter(y=y, name="FIRSVDFilter2", mode="lines")
+fig.show()
+
+
+
+# %%
+print("Shape for wfbkimpulse: ",wfbkimpulse.shape)
+print("Shape for wsecimpulse: ",wsecimpulse.shape)
+
+WK = format_W(wfbkimpulse,50)
+WS = format_W(wsecimpulse,50)
+
+Uk,Sk,VkT = np.linalg.svd(WK)
+Us,Ss,VsT = np.linalg.svd(WS)
+
+fig = px.line()
+fig.add_scatter(y=Sk, name="Feedback path", mode="lines")
+fig.add_scatter(y=Ss, name="Secondary path", mode="lines")
+fig.update_layout(title="Singular values comparison")
+fig.show()
+
+
+# %%
+X = np.linalg.inv(Uk) @ WS
+Xen = np.sqrt((X**2).sum(axis=0))
+
+fig = px.line()
+fig.add_scatter(y=Xen, name="Energy projection of secondary path on feedback path", mode="lines")
+fig.add_scatter(y=Ss, name="Secondary path singular values", mode="lines")
+fig.update_layout(title="Energy projection of secondary path on feedback path")
+fig.show()
+
+
+# %%
+print(X.shape)
+print((np.diag(Ss) @ VsT).shape)
+# %%
+print(np.diag(Ss).shape)
+print(VsT.shape)
 # %%
