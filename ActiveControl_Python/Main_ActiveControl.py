@@ -487,6 +487,19 @@ fig.show()
 X = np.linalg.inv(Uk) @ WS
 Xen = np.sqrt((X**2).sum(axis=0))
 
+Ss_padded = np.zeros_like(VsT)
+min_len = min(Ss_padded.shape[0], len(Ss))
+indices = np.arange(min_len)
+Ss_padded[indices, indices] = Ss[:min_len]
+
+Sk_padded = np.zeros_like(VkT)
+min_len = min(Sk_padded.shape[0], len(Sk))
+indices = np.arange(min_len)
+Sk_padded[indices, indices] = Sk[:min_len]
+
+SVTk = Sk_padded @ VkT
+SVTs = Ss_padded @ VsT
+print(Ss_padded)
 fig = px.line()
 fig.add_scatter(y=Xen, name="Energy projection of secondary path on feedback path", mode="lines")
 fig.add_scatter(y=Ss, name="Secondary path singular values", mode="lines")
@@ -495,9 +508,222 @@ fig.show()
 
 
 # %%
-print(X.shape)
-print((np.diag(Ss) @ VsT).shape)
+
 # %%
 print(np.diag(Ss).shape)
 print(VsT.shape)
+print(Us.shape)
+# %%
+"""
+Secondary Filter will be of Us and SsVsT
+Feedback  Filter wiil be of Us and X
+
+Compare original Shapes
+"""
+print(Us.shape,SVTs.shape)
+print(Us.shape,X.shape)
+
+Bs  = 3
+Bk  = 3
+C_weightssec = np.zeros((Bs,SVTs.shape[1]))
+R_weightssec = np.zeros((Bs,Us.shape[0]))
+
+#C_weightsfbk = np.zeros((Bk,SVTk.shape[1]))
+#R_weightsfbk = np.zeros((Bk,Uk.shape[0]))
+
+C_weightsfbk = np.zeros((Bk,X.shape[1]))
+R_weightsfbk = np.zeros((Bk,Us.shape[0]))
+
+for i in range(Bk):
+    C_weightsfbk[i,:] = X.T[:,i]
+    R_weightsfbk[i,:] = Us[:,i]
+    #C_weightsfbk[i,:] = SVTk.T[:,i]
+    #R_weightsfbk[i,:] = Uk[:,i] 
+for i in range(Bs):
+    C_weightssec[i,:] = SVTs.T[:,i]
+    R_weightssec[i,:] = Us[:,i]
+
+print(C_weightsfbk.shape,R_weightsfbk.shape)
+print(C_weightssec.shape,R_weightssec.shape)
+
+print(f'Feedback  Total number of coefficients: {C_weightsfbk.size + R_weightsfbk.size} vs {wfbkimpulse.size} ({100*(1 - (R_weightsfbk.size + R_weightsfbk.size)/wfbkimpulse.size):.2f}% reduction)')
+print(f'Secondary Total number of coefficients: {C_weightssec.size + R_weightssec.size} vs {wsecimpulse.size} ({100*(1 - (R_weightssec.size + R_weightssec.size)/wsecimpulse.size):.2f}% reduction)')
+
+yfb=  np.zeros(firmem)
+ysec= np.zeros(firmem)
+
+firsvdfbk = FIRSVDFilterPy(C_weightsfbk, R_weightsfbk)
+firsvdfbk.reset()
+yfb[0] = firsvdfbk.filterstep(1.0)
+for k in range(1,firmem):
+    yfb[k] = firsvdfbk.filterstep(0.0)
+
+
+firsvdsec = FIRSVDFilterPy(C_weightssec, R_weightssec)
+firsvdsec.reset()
+ysec[0] = firsvdsec.filterstep(1.0)
+for k in range(1,firmem):
+    ysec[k] = firsvdsec.filterstep(0.0)
+# %%
+
+def gen_wsec_wfbk_filters(firmem):
+  # Secondary path via impulse response (ideal but not practical):
+  wsecimpulse = np.zeros(firmem) # Impulse response vector
+  cbeam.reset()
+  cbeam.setforce(controlpos,1.0) # Force is applied at the control position
+  cbeam.update()
+  wsecimpulse[0] = cbeam.getaccelms2(errorpos) # Read the acceleration at the error position
+  cbeam.setforce(controlpos,0.0) # Force is removed
+  for k in range(1,firmem):
+    cbeam.update() # Update the beam for 1 sampling period.
+    wsecimpulse[k] = cbeam.getaccelms2(errorpos) # Read the acceleration at the error position
+
+
+  wfbkimpulse = np.zeros(firmem) # Impulse response vector
+  cbeam.reset()
+  cbeam.setforce(controlpos,1.0) # Force is applied at the control position
+  cbeam.update()
+  wfbkimpulse[0] = cbeam.getaccelms2(referencepos) # Read the acceleration at the error position
+  cbeam.setforce(controlpos,0.0) # Force is removed
+  for k in range(1,firmem):
+    cbeam.update() # Update the beam for 1 sampling period.
+    wfbkimpulse[k] = cbeam.getaccelms2(referencepos) # Read the acceleration at the error position
+
+  fig = px.line()
+  fig.add_scatter(y = wfbkimpulse)
+  fig.add_scatter(y = wsecimpulse)
+  
+  return wsecimpulse,wfbkimpulse
+"""
+General Parameters for simulation comparison
+"""
+
+mu = 0.004
+force_amplitude = 0.3
+
+"""
+Run Filter without SVD 
+"""
+firmem = 2000
+wsecimpulse_500 , wfbkimpulse_500 = gen_wsec_wfbk_filters(2000)
+
+maxtime = 120.0
+nsteps = int(maxtime * fs) # Total number of steps
+vibstart = 0.0 # Start time of the vibration
+controlstart = 30.0 # Start time of the control
+
+controller = FIRFxNLMS(mem=300, memsec=firmem) # Create the controller
+# controller.setSecondary(wsecimpulse) # Set the secondary path
+controller.setSecondary(FIR(wsecimpulse_500)) # Set the secondary path
+controller.setAlgorithm('NLMS') # Set the algorithm to NLMS
+controller.mu = mu # Set the step size
+controller.psi = 1e-3 # Set the regularization parameter
+controller.reset() # Reset the controller
+
+feedbackfilter = FIR(wfbkimpulse_500) # Create the feedback filter
+feedbackfilter.reset() # Reset the filter
+
+vibfreq = 12.0 # Hertz
+th = np.linspace(0.0,maxtime,nsteps) # Time vector
+xh = force_amplitude*np.sin(2*np.pi*th*vibfreq) # Sinusoidal force vector
+xh[0:int(fs*vibstart)] = 0.0 # Force is zero for the first 10 seconds
+
+cbeam.reset()
+err_500 = np.zeros(nsteps) # Vibration response
+yfbk = np.zeros(nsteps) # Vibration response
+
+# Running the simulation:
+for k in range(nsteps):
+  cbeam.setforce(perturbpos,xh[k]) # force is applied
+  cbeam.setforce(controlpos,-controller.y) # Control force is applied
+
+  if th[k] >= controlstart: # Control starts at 30 seconds
+    controller.update(cbeam.getaccelms2(errorpos)) 
+  yfbk[k] = feedbackfilter.filterstep(-controller.y) # Get the feedback force
+  controller.evalout(cbeam.getaccelms2(referencepos) - yfbk[k])
+
+  err_500[k] = cbeam.getaccelms2(errorpos) # Error acceleration is read
+
+  cbeam.update() # beam is updated
+
+# 
+"""
+Run SVD Filter
+"""
+firmem = 500
+controller = FIRFxNLMS(mem=firmem, memsec=firmem) # Create the controller
+# controller.setSecondary(wsecimpulse) # Set the secondary path
+firsvdsec.reset()
+controller.setSecondary(FIRSVDFilterPy(C_weightssec,R_weightssec)) # Set the secondary path
+#controller.setSecondary(FIR(wsecimpulse_500))
+controller.setAlgorithm('NLMS') # Set the algorithm to NLMS
+controller.mu = mu # Set the step size
+controller.psi = 1e-3 # Set the regularization parameter
+controller.reset() # Reset the controller
+
+feedbackfilter = FIRSVDFilterPy(C_weightsfbk,R_weightsfbk)  # Create the feedback filter
+#feedbackfilter  = FIR(wfbkimpulse_500)
+feedbackfilter.reset() # Reset the filter
+
+vibfreq = 12.0 # Hertz
+th = np.linspace(0.0,maxtime,nsteps) # Time vector
+xh = force_amplitude*np.sin(2*np.pi*th*vibfreq) # Sinusoidal force vector
+xh[0:int(fs*vibstart)] = 0.0 # Force is zero for the first 10 seconds
+
+cbeam.reset()
+err_6400 = np.zeros(nsteps) # Vibration response
+yfbk = np.zeros(nsteps) # Vibration response
+
+# Running the simulation:
+for k in range(nsteps):
+  cbeam.setforce(perturbpos,xh[k]) # force is applied
+  cbeam.setforce(controlpos,-controller.y) # Control force is applied
+
+  if th[k] >= controlstart: # Control starts at 30 seconds
+    controller.update(cbeam.getaccelms2(errorpos)) 
+  yfbk[k] = feedbackfilter.filterstep(-controller.y) # Get the feedback force
+  controller.evalout(cbeam.getaccelms2(referencepos) - yfbk[k])
+
+  err_6400[k] = cbeam.getaccelms2(errorpos) # Error acceleration is read
+
+  cbeam.update() # beam is updated
+# Plotting the results:
+fig = px.line()
+fig.add_scatter(x=th, y=xh, name="Perturbation force (N)", mode="lines")
+fig.add_scatter(x=th, y=err_500, name=f"Beam accelaration (m/s²) 500 taps mu = {mu}", mode="lines")
+fig.add_scatter(x=th, y=err_6400, name=f"Beam accelaration (m/s²)500 taps SVD mu = {mu}", mode="lines")
+
+def find_local_maxima(signal):
+    peaks = []
+    for i in range(1, len(signal)-1):
+        if signal[i] > signal[i-1] and signal[i] > signal[i+1]:
+            peaks.append(i)
+    return np.array(peaks)
+
+# For err_500
+#peaks_500 = find_local_maxima(err_500)
+#peaks_500_below = peaks_500[err_500[peaks_500] < 0.02]
+#fig.add_vline(x=th[peaks_500_below[7]], line_width=1, line_dash="dash", line_color="red")
+#
+## For err_6400
+#peaks_6400 = find_local_maxima(err_6400)
+#peaks_6400_below = peaks_6400[err_6400[peaks_6400] < 0.02]
+#fig.add_vline(x=th[peaks_6400_below[7]], line_width=1, line_dash="dash", line_color="blue")
+
+fig.update_layout(
+    legend=dict(
+        orientation="h", # Horizontal legend
+        yanchor="bottom",
+        y=-0.3, # Adjust this value to move the legend further down
+        xanchor="center",
+        x=0.5
+    ),
+    margin=dict(b=100) # Increase bottom margin if needed
+)
+
+fig.show()
+print(f"Parameters: wsec (B/C) = ({Bs}/{50}) wfbk (B/C) = ({Bk}/{50}) | ")
+print(f'WFBK: Total number of coefficients: {C_weightsfbk.size + R_weightsfbk.size} vs {wfbkimpulse.size} ({100*(1 - (R_weightsfbk.size + R_weightsfbk.size)/wfbkimpulse.size):.2f}% reduction)')
+print(f'WSEC: Total number of coefficients: {C_weightssec.size + R_weightssec.size} vs {wsecimpulse.size} ({100*(1 - (C_weights.size + R_weights.size)/wsecimpulse.size):.2f}% reduction)')
+
 # %%
