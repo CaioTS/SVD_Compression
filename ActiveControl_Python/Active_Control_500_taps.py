@@ -237,7 +237,7 @@ General Parameters for simulation comparison
 """
 
 mu = 0.004
-force_amplitude = 1
+force_amplitude = 0.3
 
 """
 Run Filter without SVD 
@@ -343,15 +343,32 @@ def find_local_maxima(signal):
             peaks.append(i)
     return np.array(peaks)
 
+
+
 # For err_500
-peaks_500 = find_local_maxima(err_500)
-peaks_500_below = peaks_500[err_500[peaks_500] < 0.02]
-fig.add_vline(x=th[peaks_500_below[7]], line_width=1, line_dash="dash", line_color="red")
+energy_500  = err_500**2
+energy_6400 = err_6400**2
+
+peaks_500 = find_local_maxima(energy_500)
+peaks_500_mean  = peaks_500[(energy_500[peaks_500] < force_amplitude)  & (energy_500[peaks_500] > 0.02)]
+max_energy = energy_500[peaks_500_mean[int(len(peaks_500_mean)/2)]]
+print(max_energy)
+
+peaks_500_below = peaks_500[energy_500[peaks_500] > 0.05 * max_energy]
+
+
+fig.add_vline(x=th[peaks_500_below[-1]], line_width=1, line_dash="dash", line_color="red")
+fig.add_vline(x=th[peaks_500_mean[int(len(peaks_500_mean)/2)]], line_width=1, line_dash="dash", line_color="yellow")
 
 # For err_6400
-peaks_6400 = find_local_maxima(err_6400)
-peaks_6400_below = peaks_6400[err_6400[peaks_6400] < 0.02]
-fig.add_vline(x=th[peaks_6400_below[7]], line_width=1, line_dash="dash", line_color="blue")
+peaks_6400 = find_local_maxima(energy_6400)
+peaks_6400_below = peaks_6400[energy_6400[peaks_6400] > 0.05 * max_energy]
+fig.add_vline(x=th[peaks_6400_below[-1]], line_width=1, line_dash="dash", line_color="blue")
+
+#Get times to Reach the 5% of energy
+
+dt_500 = th[peaks_500_below[-1]] - 30
+dt_6400 = th[peaks_6400_below[-1]] - 30
 
 fig.update_layout(
     legend=dict(
@@ -368,6 +385,9 @@ fig.show()
 print(f"Parameters: wsec (B/C) = ({B_s}/{C_chosen_s}) wfbk (B/C) = ({B_fb}/{C_chosen_fb}) | ")
 print(f'WFBK: Total number of coefficients: {C_weightsfbk.size + R_weightsfbk.size} vs {wfbkimpulse.size} ({100*(1 - (R_weightsfbk.size + R_weightsfbk.size)/wfbkimpulse.size):.2f}% reduction)')
 print(f'WSEC: Total number of coefficients: {C_weights.size + R_weights.size} vs {wsecimpulse.size} ({100*(1 - (C_weights.size + R_weights.size)/wsecimpulse.size):.2f}% reduction)')
+
+print("Time to stabilize under 5% energy \n Using Same Number of coeffients:")
+print(f"SVD     : {dt_6400:.2f} s\nnon-SVD : {dt_500:.2f} s\nAcelleration: {dt_500/dt_6400:.2f}x")
 
 
 # %%
