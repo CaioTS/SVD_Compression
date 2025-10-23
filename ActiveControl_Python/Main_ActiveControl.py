@@ -235,7 +235,7 @@ class FIRSVDFilterPy(FIR):
         self.vdot = C_weights        
         self.inputbuffer = np.zeros(self.N)
         self.util = []
-        for k in range(B):
+        for k in range(self.B):
            self.util.append(FIR(R_weights[k,:]))
         self.reset()
 
@@ -484,7 +484,7 @@ fig.show()
 
 
 # %%
-X = np.linalg.inv(Uk) @ WS
+X = np.linalg.inv(Us) @ WK
 Xen = np.sqrt((X**2).sum(axis=0))
 
 Ss_padded = np.zeros_like(VsT)
@@ -523,8 +523,8 @@ Compare original Shapes
 print(Us.shape,SVTs.shape)
 print(Us.shape,X.shape)
 
-Bs  = 3
-Bk  = 3
+Bs  = 5
+Bk  = 5
 C_weightssec = np.zeros((Bs,SVTs.shape[1]))
 R_weightssec = np.zeros((Bs,Us.shape[0]))
 
@@ -546,9 +546,8 @@ for i in range(Bs):
 print(C_weightsfbk.shape,R_weightsfbk.shape)
 print(C_weightssec.shape,R_weightssec.shape)
 
-print(f'Feedback  Total number of coefficients: {C_weightsfbk.size + R_weightsfbk.size} vs {wfbkimpulse.size} ({100*(1 - (R_weightsfbk.size + R_weightsfbk.size)/wfbkimpulse.size):.2f}% reduction)')
+print(f'Feedback  Total number of coefficients: {C_weightsfbk.size + R_weightsfbk.size - R_weightssec.size} vs {wfbkimpulse.size} ({100*(1 - (R_weightsfbk.size + R_weightsfbk.size - R_weightssec.size)/wfbkimpulse.size):.2f}% reduction)')
 print(f'Secondary Total number of coefficients: {C_weightssec.size + R_weightssec.size} vs {wsecimpulse.size} ({100*(1 - (R_weightssec.size + R_weightssec.size)/wsecimpulse.size):.2f}% reduction)')
-
 yfb=  np.zeros(firmem)
 ysec= np.zeros(firmem)
 
@@ -604,8 +603,8 @@ force_amplitude = 0.3
 """
 Run Filter without SVD 
 """
-firmem = 2000
-wsecimpulse_500 , wfbkimpulse_500 = gen_wsec_wfbk_filters(2000)
+firmem = 500
+wsecimpulse_500 , wfbkimpulse_500 = gen_wsec_wfbk_filters(firmem)
 
 maxtime = 120.0
 nsteps = int(maxtime * fs) # Total number of steps
@@ -701,14 +700,14 @@ def find_local_maxima(signal):
     return np.array(peaks)
 
 # For err_500
-#peaks_500 = find_local_maxima(err_500)
-#peaks_500_below = peaks_500[err_500[peaks_500] < 0.02]
-#fig.add_vline(x=th[peaks_500_below[7]], line_width=1, line_dash="dash", line_color="red")
-#
-## For err_6400
-#peaks_6400 = find_local_maxima(err_6400)
-#peaks_6400_below = peaks_6400[err_6400[peaks_6400] < 0.02]
-#fig.add_vline(x=th[peaks_6400_below[7]], line_width=1, line_dash="dash", line_color="blue")
+peaks_500 = find_local_maxima(err_500)
+peaks_500_below = peaks_500[err_500[peaks_500] > 0.02]
+fig.add_vline(x=th[peaks_500_below[-1]], line_width=1, line_dash="dash", line_color="red")
+
+# For err_6400
+peaks_6400 = find_local_maxima(err_6400)
+peaks_6400_below = peaks_6400[err_6400[peaks_6400] > 0.02]
+fig.add_vline(x=th[peaks_6400_below[-1]], line_width=1, line_dash="dash", line_color="blue")
 
 fig.update_layout(
     legend=dict(
@@ -723,7 +722,7 @@ fig.update_layout(
 
 fig.show()
 print(f"Parameters: wsec (B/C) = ({Bs}/{50}) wfbk (B/C) = ({Bk}/{50}) | ")
-print(f'WFBK: Total number of coefficients: {C_weightsfbk.size + R_weightsfbk.size} vs {wfbkimpulse.size} ({100*(1 - (R_weightsfbk.size + R_weightsfbk.size)/wfbkimpulse.size):.2f}% reduction)')
+print(f'WFBK: Total number of coefficients: {C_weightsfbk.size + R_weightsfbk.size - + R_weightssec.size} vs {wfbkimpulse.size} ({100*(1 - (R_weightsfbk.size + R_weightsfbk.size - + R_weightssec.size)/wfbkimpulse.size):.2f}% reduction)')
 print(f'WSEC: Total number of coefficients: {C_weightssec.size + R_weightssec.size} vs {wsecimpulse.size} ({100*(1 - (C_weights.size + R_weights.size)/wsecimpulse.size):.2f}% reduction)')
 
 # %%
