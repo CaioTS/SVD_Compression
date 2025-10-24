@@ -76,7 +76,7 @@ class FIRFxNLMS:
 
 	def NLMSupdate(sf,e):
 		sf.norm = sf.ww @ sf.ww
-		sf.ww = sf.ww + sf.mu * e * sf.xxf / ((sf.xxf@sf.xxf) + sf.fi)
+		sf.ww = sf.ww + sf.mu * e * sf.xxf / ((sf.xxf@sf.xxf + sf.fi ) + sf.fi)
 
 	def setAlgorithm(sf,alg='NLMS'):
 		if alg == 'LMS':
