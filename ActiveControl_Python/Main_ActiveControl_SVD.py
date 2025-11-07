@@ -207,7 +207,7 @@ fig.show()
 # Matrix formatting with zero padding:
 def format_W(W,R):
     n_pad = W.shape[0] % R
-    W_pad = np.zeros(int(W.shape[0] + (R - n_pad)))
+    W_pad = np.zeros(int(W.shape[0] + (R - n_pad)) if n_pad != 0 else W.shape[0])
     W_pad[:W.shape[0]] = W
     C = W_pad.shape[0]/R
     lower_dim = min(R,C)
