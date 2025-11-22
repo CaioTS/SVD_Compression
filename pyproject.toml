@@ -5,6 +5,7 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
+    "actvibmodules",
     "ipykernel>=7.0.1",
     "ipython>=9.6.0",
     "matplotlib>=3.10.7",
@@ -15,3 +16,6 @@ dependencies = [
     "plotly>=6.3.1",
     "scipy>=1.16.2",
 ]
+
+[tool.uv.sources]
+actvibmodules = { git = "https://github.com/eduardobatista/ActVibModules.git" }
