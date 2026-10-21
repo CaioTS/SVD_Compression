@@ -8,7 +8,6 @@ import plotly.graph_objects as go
 from ActVibModules.CantileverBeam import CantileverBeam
 # from ActVibModules.Adaptive import FIRNLMS
 from ActVibModules.DSPFuncs import easyFourier
-from ActVibModules.AdaptiveOO import FIRFxNLMS, FIR
 from itertools import product
 import pandas as pd
 
@@ -105,6 +104,85 @@ fig.show()
 
 # %% Funções
 
+class FIR:
+    """
+    FIR filter class.
+    """
+    def __init__(self, coeffs):
+        self.w = coeffs
+        self.x = np.zeros(coeffs.shape[0])
+        self.N = coeffs.shape[0]
+    
+    def reset(self):
+        self.x = np.zeros(self.N)
+    
+    def filterstep(self, xsample):
+        self.x[1:] = self.x[:-1]
+        self.x[0] = xsample
+        ysample = self.w @ self.x
+        return ysample
+
+    def filter(self, x):
+        y = np.zeros(x.shape)
+        for k in range(x.shape[0]):
+            y[k] = self.filterstep(x[k])
+        return y
+
+
+class FIRFxNLMS:
+
+    def __init__(sf,mem):
+        sf.mem = mem # Memory size
+        sf.ww = np.zeros(mem) # Coefficient vector        
+        sf.mu = 0.1 # Step-size parameter
+        sf.fi = 1e-6 # Regularization parameter        
+        sf.secondaryfilter = None
+        sf.vecsize = mem
+        sf.xx = np.zeros(sf.vecsize) # Input vector
+        sf.xxf = np.zeros(sf.vecsize)
+        sf.y = 0 # Filter output
+        sf.e = 0 # Error
+        sf.norm = 0
+        sf.setAlgorithm('NLMS')
+
+    def reset(sf):
+        sf.ww = np.zeros(sf.mem)
+        sf.xxf = np.zeros(sf.mem)
+        sf.xx = np.zeros(sf.vecsize)
+        sf.y = 0
+        sf.e = 0
+        sf.norm = 0
+        if sf.secondaryfilter is not None:
+            sf.secondaryfilter.reset()
+
+    def setSecondary(sf,secfilter: FIR):
+        sf.secondaryfilter = secfilter
+
+    def setParams(sf,mu,fi):
+        sf.mu = mu
+        sf.fi = fi
+
+    def evalout(sf,x):
+        sf.xx[1:sf.vecsize] = sf.xx[0:sf.vecsize-1]
+        sf.xx[0] = x
+        sf.y = sf.xx[0:sf.mem] @ sf.ww
+        sf.xxf[1:sf.mem] = sf.xxf[0:sf.mem-1]
+        sf.xxf[0] = sf.secondaryfilter.filterstep(sf.xx[0])
+
+    def LMSupdate(sf,e):
+        sf.norm = sf.ww @ sf.ww
+        sf.ww = sf.ww + 2 * sf.mu * e * sf.xxf
+
+    def NLMSupdate(sf,e):
+        sf.norm = sf.ww @ sf.ww
+        sf.ww = sf.ww + sf.mu * e * sf.xxf / (sf.xxf @ sf.xxf + sf.fi)
+
+    def setAlgorithm(sf,alg='NLMS'):
+        if alg == 'LMS':
+            sf.update = sf.LMSupdate
+        else:
+            sf.update = sf.NLMSupdate
+
 # Matrix formatting with zero padding:
 def format_W(W,R):
     n_pad = W.shape[0] % R
@@ -144,30 +222,37 @@ class FIRSVDFilterPy(FIR):
         return self.y
 
 
-def gen_wsec_wfbk_filters(cbeam, firmem, controlpos, errorpos, referencepos, perturbpos, verbose=False):
-    # Secondary path via impulse response (ideal but not practical):
-    wsecimpulse = np.zeros(firmem) # Impulse response vector
-    cbeam.reset()
-    cbeam.setforce(controlpos,1.0) # Force is applied at the control position
-    cbeam.update()
-    wsecimpulse[0] = cbeam.getaccelms2(errorpos) # Read the acceleration at the error position
-    #cbeam.update()
-    cbeam.setforce(controlpos,0.0) # Force is removed
-    for k in range(1,firmem):
-        cbeam.update() # Update the beam for 1 sampling period.
-        wsecimpulse[k] = cbeam.getaccelms2(errorpos) # Read the acceleration at the error position
-
-
-    wfbkimpulse = np.zeros(firmem) # Impulse response vector
-    cbeam.reset()
-    cbeam.setforce(controlpos,1.0) # Force is applied at the control position
-    cbeam.update()
-    wfbkimpulse[0] = cbeam.getaccelms2(referencepos) # Read the acceleration at the error position
-    #cbeam.update()
-    cbeam.setforce(controlpos,0.0) # Force is removed
-    for k in range(1,firmem):
-        cbeam.update() # Update the beam for 1 sampling period.
-        wfbkimpulse[k] = cbeam.getaccelms2(referencepos) # Read the acceleration at the error position
+def gen_wsec_wfbk_filters(cbeam, firmem, controlpos, errorpos, referencepos, perturbpos, verbose=False, ideal=False):
+    if ideal:
+        wsecimpulse = np.zeros(firmem) # Impulse response vector
+        wfbkimpulse = np.zeros(firmem) # Impulse response vector
+        cbeam.reset()
+        cbeam.setforce(controlpos,1.0) # Force is applied at the control position
+        cbeam.update()
+        wsecimpulse[0] = cbeam.getaccelms2(errorpos) # Read the acceleration at the error position
+        wfbkimpulse[0] = cbeam.getaccelms2(referencepos) # Read the acceleration at the error position
+        #cbeam.update()
+        cbeam.setforce(controlpos,0.0) # Force is removed
+        for k in range(1,firmem):
+            cbeam.update() # Update the beam for 1 sampling period.
+            wsecimpulse[k] = cbeam.getaccelms2(errorpos) # Read the acceleration at the error position
+            wfbkimpulse[k] = cbeam.getaccelms2(referencepos) # Read the acceleration at the error position
+    else:
+        wsecimpulse = np.zeros(firmem) # Impulse response vector
+        wfbkimpulse = np.zeros(firmem) # Impulse response vector
+        x = np.random.randn(int(120*fs))
+        xxsec = np.zeros(firmem)
+        xxfbk = np.zeros(firmem)
+        cbeam.reset()
+        for k in range(x.shape[0]):
+            cbeam.setforce(controlpos,x[k])            
+            xxsec[1:] = xxsec[:-1]
+            xxsec[0] = x[k]
+            xxfbk[1:] = xxfbk[:-1]
+            xxfbk[0] = x[k]            
+            wsecimpulse = wsecimpulse + 0.05 * cbeam.getaccelms2(errorpos) * xxsec / (xxsec @ xxsec + 1e-2) # Read the acceleration at the error position
+            wfbkimpulse = wfbkimpulse + 0.05 * cbeam.getaccelms2(referencepos) * xxfbk / (xxfbk @ xxfbk + 1e-2) # Read the acceleration at the reference position
+            cbeam.update() # Update the beam for 1 sampling period.
 
     if verbose:
         fig = px.line()
@@ -179,23 +264,8 @@ def gen_wsec_wfbk_filters(cbeam, firmem, controlpos, errorpos, referencepos, per
 
 def calculate_convergence_time(err, threshold, controlstart=30.0, fs=416, refwindow=5.0):
     energy  = err**2    
-    # th = np.linspace(0.0,len(err)/fs,len(err)) # Time vector
-
-    refenergy = np.max(energy[int(fs*(controlstart-refwindow)): int(fs*controlstart)])    
-    # max_energy = max(energy[int(fs*10): int(fs*20)])
-    # max_index_original = np.argmax(energy[int(fs*10): int(fs*20)]) + int(fs*10)
-
+    refenergy = np.max(energy[int(fs*(controlstart-refwindow)): int(fs*controlstart)])  
     overshoot = np.max(energy[int(fs*controlstart):])/refenergy
-    # overshoot_index = np.argmax(energy[int(fs*30):]) + int(fs*30)
-    # indeces = np.arange(0,len(th),1)
-
-    # indeces_above = indeces[energy[indeces] >= threshold * refenergy]
-    # point_above = indeces_above[-1] + 1 
-    # if point_above >= len(th):
-    #    point_above = len(th) - 1
-    #Get times to Reach the threshold of energy
-
-    # dt = th[indeces_above[-1]] - 30
     convthres = threshold * refenergy
     lastabovethres = np.where(energy[int(fs*controlstart):] >= convthres)
     if lastabovethres[0].size > 0:
@@ -249,7 +319,7 @@ def gen_SVD_weights(weights,num_coef):
     return C_weights,R_weights
 
 
-def run_sim(threshold,filter_size,wsecimpulse,wfbkimpulse,isSVD=False,
+def run_sim(threshold,wsecimpulse,wsecsize,wfbkimpulse,wfbksize,isSVD=False,
             compressed_filters='both',verbose=False,
             beamconfig=beamconfig, experimentconfig=experimentconfig,
             perturbconfig=None, controllerconfig=None):
@@ -257,17 +327,18 @@ def run_sim(threshold,filter_size,wsecimpulse,wfbkimpulse,isSVD=False,
     Simulation for the beam and different filters implementations
 
     Args:
-        threshold (float): Convergence threshold for the error signal. Defaults to 0.05.
-        controllersize (int): Size of the controller memory.
-        filter_size (int): Number of taps (memory length) for the FIR filter.
-        wsecimpulse (array_like): Impulse response of the secondary path (S).
-        wfbkimpulse (array_like): Impulse response of the feedback path (F).
-        mu (float): Step size (learning rate) for the adaptive algorithm update.
-        psi (float): Regularization parameter.
-        isSVD (bool): If True, performs the update using Singular Value Decomposition.
-        compressed_filters(string): Choose what filters are compressed: (both, sec, fbk)
-        verbose (bool): If True, prints detailed information during the simulation.
-        perturbconfig (dict): Configuration for the perturbation signal.
+        threshold (float): Threshold for convergence time calculation.
+        wsecimpulse (array): Impulse response of the secondary path.
+        wsecsize (int): Number of coefficients to use for the secondary path filter.
+        wfbkimpulse (array): Impulse response of the feedback path.
+        wfbksize (int): Number of coefficients to use for the feedback path filter.
+        isSVD (bool, optional): Whether to use SVD-based filters. Defaults to False.
+        compressed_filters (str, optional): Which filters to compress ('both', 'sec', 'fbk'). Defaults to 'both'.
+        verbose (bool, optional): Whether to plot the results. Defaults to False.
+        beamconfig (dict, optional): Configuration for the cantilever beam. Defaults to beamconfig.
+        experimentconfig (dict, optional): Configuration for the experiment. Defaults to experimentconfig.
+        perturbconfig (dict, optional): Configuration for the perturbation. Defaults to None.
+        controllerconfig (dict, optional): Configuration for the controller. Defaults to None.
     Returns:
         tuple: A tuple containing (overshoot , convergence_time).
     """
@@ -278,39 +349,46 @@ def run_sim(threshold,filter_size,wsecimpulse,wfbkimpulse,isSVD=False,
     cbeam = CantileverBeam(**beamconfig)
     cbeam.reset()
     
-    force_amplitude = pertb_amp
     maxtime = 120.0
     nsteps = int(maxtime * fs) # Total number of steps
     controlstart = 30.0 # Start time of the control
     
-    if compressed_filters == "both":
-        wsec = wsecimpulse[:filter_size]
-        wfbk = wfbkimpulse[:filter_size]
-    elif compressed_filters == "sec":
-        wsec = wsecimpulse[:filter_size]
-        wfbk = wfbkimpulse
-    elif compressed_filters == "fbk":
-        wsec = wsecimpulse
-        wfbk = wfbkimpulse[:filter_size]
+    controller = FIRFxNLMS(mem=controllerconfig['mem']) # Create the controller
+    if isSVD:
+        if compressed_filters in ['both', 'sec']:
+            C_weights_sec,R_weights_sec = gen_SVD_weights(wsecimpulse,wsecsize)
+            controller.setSecondary(FIRSVDFilterPy(C_weights_sec,R_weights_sec)) # Set the secondary path
+        else:
+            controller.setSecondary(FIR(wsecimpulse[:wsecsize])) # Set the secondary path
+        if compressed_filters in ['both', 'fbk']:
+            C_weights_fbk,R_weights_fbk = gen_SVD_weights(wfbkimpulse,wfbksize)
+            feedbackfilter = FIRSVDFilterPy(C_weights_fbk,R_weights_fbk)  # Create the feedback filter
+        else:
+            feedbackfilter = FIR(wfbkimpulse[:wfbksize])  # Create the feedback filter
     else:
-        raise ValueError("compressed filter not compatible with function")
-
-    controller = FIRFxNLMS(mem=controllerconfig['mem'], memsec=1) # Create the controller
-    if isSVD :
-        C_weights_sec,R_weights_sec = gen_SVD_weights(wsecimpulse,filter_size)
-        C_weights_fbk,R_weights_fbk = gen_SVD_weights(wfbkimpulse,filter_size)
-        controller.setSecondary(FIRSVDFilterPy(C_weights_sec,R_weights_sec)) # Set the secondary path
-        feedbackfilter = FIRSVDFilterPy(C_weights_fbk,R_weights_fbk)  # Create the feedback filter
-    else:
-      controller.setSecondary(FIR(wsec)) # Set the secondary path
-      feedbackfilter = FIR(wfbk)
+        if compressed_filters == "both":
+            wsec = wsecimpulse[:wsecsize]
+            wfbk = wfbkimpulse[:wfbksize]
+        elif compressed_filters == "sec":
+            wsec = wsecimpulse[:wsecsize]
+            wfbk = wfbkimpulse
+        elif compressed_filters == "fbk":
+            wsec = wsecimpulse
+            wfbk = wfbkimpulse[:wfbksize]
+        elif compressed_filters == 'none':
+            wsec = wsecimpulse
+            wfbk = wfbkimpulse
+        else:
+            raise ValueError("compressed filter not compatible with function")
+        controller.setSecondary(FIR(wsec)) # Set the secondary path
+        feedbackfilter = FIR(wfbk)
     controller.setAlgorithm('NLMS') # Set the algorithm to NLMS
-    controller.mu = controllerconfig['mu'] # Set the step size
-    controller.psi = controllerconfig['psi'] # Set the regularization parameter
+    controller.setParams(controllerconfig['mu'], controllerconfig['fi']) # Set the parameters of the controller
     controller.reset() # Reset the controller
     feedbackfilter.reset() # Reset the filter
+    feedbackfilterdbg = FIR(wfbkimpulse)
+    feedbackfilterdbg.reset()
 
-    vibfreq = pertb_freq # Hertz
     th = np.linspace(0.0,maxtime,nsteps) # Time vector
     if perturbconfig['type'] == 'harmonic':
         force_amplitude = perturbconfig['amp']
@@ -319,9 +397,8 @@ def run_sim(threshold,filter_size,wsecimpulse,wfbkimpulse,isSVD=False,
 
     cbeam.reset()
     err = np.zeros(nsteps) # Vibration response
-    # yfbk = np.zeros(nsteps) # Vibration response
     yfbk = 0
-    ypf = np.zeros(nsteps) # Plant output without control
+    debugg = np.zeros(nsteps) # Plant output without control
 
     try:
         # Running the simulation:
@@ -335,8 +412,9 @@ def run_sim(threshold,filter_size,wsecimpulse,wfbkimpulse,isSVD=False,
             if th[k] >= controlstart: # Control starts at 30 seconds
                 controller.update(cbeam.getaccelms2(errorpos))        
             yfbk = feedbackfilter.filterstep(-controller.y) # Get the feedback force
-            ypf[k] = cbeam.getaccelms2(referencepos) - yfbk
-            controller.evalout(ypf[k])
+            yfbkdbg = feedbackfilterdbg.filterstep(-controller.y) # Get the feedback force for debugging
+            debugg[k] = yfbk - yfbkdbg
+            controller.evalout(cbeam.getaccelms2(referencepos) - yfbk)
             err[k] = cbeam.getaccelms2(errorpos) # Error acceleration is read
             cbeam.update() # beam is updated            
         ov, dt = calculate_convergence_time(err,threshold)
@@ -356,7 +434,7 @@ def run_sim(threshold,filter_size,wsecimpulse,wfbkimpulse,isSVD=False,
         fig.add_hline(y=np.sqrt(ov), line_width=1, line_dash="dash", line_color="red")
         fig.show()
         fig2 = px.line()
-        fig2.add_scatter(x=th, y=ypf, name="reference minus feedback", mode="lines")
+        fig2.add_scatter(x=th, y=debugg, name="Debug Signal", mode="lines")
         fig2.show()
 
         
@@ -369,28 +447,51 @@ def run_sim(threshold,filter_size,wsecimpulse,wfbkimpulse,isSVD=False,
 # if __name__ == "__main__":
     #Steps to use this function , Generate Beam(First lines in file)
     #Generate full secondary and feedback weights
-firmem = 4000
+firmem = 2000
 wsecimpulse, wfbkimpulse = gen_wsec_wfbk_filters(cbeam,firmem,verbose=True,**experimentconfig)
 px.line(y=wfbkimpulse, title="Feedback Path Impulse Response").show()
-pertb_freq , pertb_amp = 15.0 , 1.0
+pertb_freq, pertb_amp = 14.0, 1.0
 threshold = 0.1
-filter_size = 650
+filter_size = 500
 controllersize = 300
 mu = 0.002
-psi = 1e-2
-controllerconfig = {'mem': controllersize, 'mu': mu, 'psi': psi}
+fi = 1e-2
+controllerconfig = {'mem': controllersize, 'mu': mu, 'fi': fi}
 perturbconfig = {"type":'harmonic', 'freq':pertb_freq, 'amp':pertb_amp}
-ov , dt = run_sim(threshold,filter_size,wsecimpulse,wfbkimpulse,
-                  isSVD=True,compressed_filters='fbk',verbose=True,
+ov , dt = run_sim(threshold,wsecimpulse,filter_size,wfbkimpulse,filter_size,
+                  isSVD=True,compressed_filters='both',verbose=True,
                   beamconfig=beamconfig,experimentconfig=experimentconfig,
                   perturbconfig=perturbconfig, controllerconfig=controllerconfig)
-    # ov , dt = run_sim(pertb_freq,pertb_amp,threshold,filter_size,wsecimpulse,wfbkimpulse,mu,psi,isSVD=True,compressed_filters='sec')
-    # ov , dt = run_sim(pertb_freq,pertb_amp,threshold,filter_size,wsecimpulse,wfbkimpulse,mu,psi,isSVD=False,compressed_filters='sec')
 print(ov,dt)
 
 # %%
+WW = format_W(wsecimpulse,50)
+print(WW.shape)
+S,V,D = np.linalg.svd(WW)
+print(V)
+px.line(y=D[0,:], title="First Right Singular Vector of Secondary Path").show()
+C_weights_sec,R_weights_sec = gen_SVD_weights(wsecimpulse,2000)
+fir1 = FIRSVDFilterPy(C_weights_sec,R_weights_sec)
+fir1.reset()
+fir2 = FIR(wsecimpulse)
+fir2.reset()
+x = np.random.randn(10000)
+y1 = np.zeros_like(x)
+y2 = np.zeros_like(x)
+for k in range(len(x)):
+    y1[k] = fir1.filterstep(x[k])
+    y2[k] = fir2.filterstep(x[k])
+fig = px.line()
+fig.add_scatter(y=y1, mode='lines', name='FIRSVD Output')
+fig.add_scatter(y=y2, mode='lines', name='FIR Output')
+fig.add_scatter(y=(y1-y2), mode='lines', name='Difference')
+fig.update_layout(title="Comparison of FIRSVD and FIR Outputs", xaxis_title="Samples", yaxis_title="Output")
+fig.show()
+
+
+# %%
 wsecimpulse1 = wfbkimpulse[:2000]
-wsecimpulse2 = wfbkimpulse[:650]
+wsecimpulse2 = wfbkimpulse[:350]
 larger = max(wsecimpulse1.shape[0],wsecimpulse2.shape[0])
 mag,freq,pha = easyFourier(wsecimpulse1,fs,phasealso=True)
 mag2,freq2,pha2 = easyFourier(np.concatenate([wsecimpulse2]),
@@ -412,60 +513,62 @@ fig2.update_layout(title="Phase Spectrum of Secondary Path Impulse Response", xa
 fig2.show()
 
 # %%
+wsecimpulse, wfbkimpulse = gen_wsec_wfbk_filters(cbeam,firmem,verbose=True,**experimentconfig)
+threshold = 0.1
+pertb_amp = 1.0
+
 perturbfreqs = [13.0, 13.5, 14.0, 14.5, 15.0, 15.5, 16.0]
 filtersizes = [200, 400, 600, 800, 1000, 1500, 2000]
-mus = [a * 0.001 for a in range(1, 11)] + [a * 0.01 for a in range(1, 11)] + [a * 0.1 for a in range(1, 5)]
-psis = [1e-4, 1e-3, 1e-2, 1e-1]
+mus = [a * 0.001 for a in range(1, 11)] + [a * 0.01 for a in range(1, 11)] + [a * 0.1 for a in range(1, 2)]
+fis = [1e-4, 1e-3, 1e-2, 1e-1]
 issvds = [True, False]
-
-# perturbfreqs = [13.5, 14.0]
-# filtersizes = [200,]
-# mus = [a * 0.001 for a in range(1, 3)]
-# psis = [1e-2]
-# issvds = [True]
-
-combinations = list(product(perturbfreqs, filtersizes, mus, psis, issvds))
+combinations = list(product(perturbfreqs, filtersizes, mus, fis, issvds))
 print(combinations.__len__())
 
-# results = []
-# for pertb_freq, filter_size, mu, psi, isSVD in combinations:
-#     print(f"Running simulation with pertb_freq={pertb_freq}, filter_size={filter_size}, mu={mu}, psi={psi}, isSVD={isSVD}")
-#     ov , dt = run_sim(pertb_freq, pertb_amp, threshold, filter_size, wsecimpulse, wfbkimpulse, mu, psi, isSVD=isSVD, compressed_filters='both')    
-#     print(f"Results: Overshoot = {ov}, Convergence Time = {dt} seconds\n")
-#     results.append((pertb_freq, filter_size, mu, psi, isSVD, ov, dt))
+print(combinations)
 
-# df = pd.DataFrame(results, columns=['Perturb Freq', 'Filter Size', 'Mu', 'Psi', 'Is SVD', 'Overshoot', 'Convergence Time'])
-# df.to_csv('simulation_results.csv', index=False)
 
 # %%
 # Multiprocessing version of the simulation loop
 
 def run_simulation_wrapper(args):
     """Wrapper function to run a single simulation with multiprocessing."""
-    pertb_freq, filter_size, mu, psi, isSVD, wsecimpulse, wfbkimpulse, pertb_amp, threshold = args
-    print(f"(PID {os.getpid()}) Running simurulation with pertb_freq={pertb_freq}, filter_size={filter_size}, mu={mu}, psi={psi}, isSVD={isSVD}")
-    ov, dt = run_sim(pertb_freq, pertb_amp, threshold, filter_size, wsecimpulse, wfbkimpulse, mu, psi, isSVD=isSVD, compressed_filters='both')
+    pertb_freq, filter_size, mu, fi, isSVD, wsecimpulse, wfbkimpulse, pertb_amp, threshold = args
+    controllerconfig = {'mem': 300, 'mu': mu, 'fi': fi}
+    perturbconfig = {'type': 'harmonic', 'freq': pertb_freq, 'amp': pertb_amp}
+    print(f"(PID {os.getpid()}) Running simulation with pertb_freq={pertb_freq}, filter_size={filter_size}, mu={mu}, fi={fi}, isSVD={isSVD}")
+    ov, dt = run_sim(
+        threshold,
+        wsecimpulse,
+        filter_size,
+        wfbkimpulse,
+        filter_size,
+        isSVD=isSVD,
+        compressed_filters='both',
+        perturbconfig=perturbconfig,
+        controllerconfig=controllerconfig,
+    )
     print(f"(PID {os.getpid()}) Results: Overshoot = {ov}, Convergence Time = {dt} seconds\n")
-    return (pertb_freq, filter_size, mu, psi, isSVD, ov, dt)
+    return (pertb_freq, filter_size, mu, fi, isSVD, ov, dt)
 
 if __name__ == '__main__':
-    # Prepare arguments for multiprocessing
-    mp_args = [(pertb_freq, filter_size, mu, psi, isSVD, wsecimpulse, wfbkimpulse, pertb_amp, threshold) 
-               for pertb_freq, filter_size, mu, psi, isSVD in combinations]
+    # Prepare arguments for multiprocessing    
+    mp_args = [(pertb_freq, filter_size, mu, fi, isSVD, wsecimpulse, wfbkimpulse, pertb_amp, threshold) 
+               for pertb_freq, filter_size, mu, fi, isSVD in combinations]
     
     # Run simulations using multiprocessing
-    print("Available CPUs:",os.cpu_count())
+    print("Available CPUs:", os.cpu_count())
     results_mp = []
-    with ProcessPoolExecutor(max_workers=max(1, os.cpu_count()-2)) as executor:
+    with ProcessPoolExecutor(max_workers=max(1, os.cpu_count() - 2)) as executor:
         futures = [executor.submit(run_simulation_wrapper, args) for args in mp_args]
         for future in as_completed(futures):
             result = future.result()
             results_mp.append(result)
-            print(f"Finished simulation: pertb_freq={result[0]}, filter_size={result[1]}, mu={result[2]}, psi={result[3]}, isSVD={result[4]}")
+            print(f"Finished simulation: pertb_freq={result[0]}, filter_size={result[1]}, mu={result[2]}, fi={result[3]}, isSVD={result[4]}")
     
     # Create DataFrame from results
-    df_mp = pd.DataFrame(results_mp, columns=['Perturb Freq', 'Filter Size', 'Mu', 'Psi', 'Is SVD', 'Overshoot', 'Convergence Time'])
+    df_mp = pd.DataFrame(results_mp, columns=['Perturb Freq', 'Filter Size', 'Mu', 'Fi', 'Is SVD', 'Overshoot', 'Convergence Time'])
     df_mp.to_csv('simulation_results_multiprocessing_filtermem2000.csv', index=False)
-    print("Multiprocessing results saved to 'simulation_results_multiprocessing.csv'")
+    print("Multiprocessing results saved to 'simulation_results_multiprocessing_filtermem2000.csv'")
 
 # %%

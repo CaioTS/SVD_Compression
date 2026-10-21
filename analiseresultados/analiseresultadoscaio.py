@@ -4,7 +4,7 @@ import plotly.express as px
 from IPython.display import display
 
 # %%
-data = pl.read_csv("simulation_results_multiprocessing_filtermem2000.csv")
+data = pl.read_csv("simulation_results_multiprocessing_filtermem2000_viga2.csv")
 display(data)
 
 # %%
@@ -17,7 +17,16 @@ convtime = data.group_by(
     pl.col("Perturb Freq"),
     pl.col("Is SVD"),
 )
-display(convtime)
+convtime.show(limit=None)
+
+#%%
+data.filter(
+    pl.col("Perturb Freq") == 14.0,
+    pl.col("Filter Size") == 2000,
+    pl.col("Convergence Time").is_not_null()
+).sort(
+    pl.col("Convergence Time")
+).show(limit=50)
 
 # %%
 aux = data.select(
@@ -29,7 +38,7 @@ px.line(y=aux.to_numpy()[:,0]).show()
 
 # %%
 convtimeo = data.filter(
-    pl.col("Overshoot") < 5.0
+    pl.col("Overshoot") < 2.0
 ).group_by(
     pl.col("Perturb Freq"),
     pl.col("Is SVD"),
@@ -51,7 +60,7 @@ display(data)
 
 # %%
 convtimemem = data.filter(
-    pl.col("Overshoot") < 4.0
+    pl.col("Overshoot") < 2.0
 ).group_by(
     pl.col("Perturb Freq"),
     pl.col("Is SVD"),
@@ -63,8 +72,20 @@ convtimemem = data.filter(
     pl.col("Filter Size"),
     pl.col("Is SVD"),    
 )
-display(convtimemem)
+convtimemem.show(limit=None)
 
-px.line(convtimemem.to_pandas(), x="Perturb Freq", y="Min Convergence Time", color="Is SVD", line_dash="Filter Size", title="Convergence Time vs Perturbation Frequency by Filter Size").show()
+px.line(convtimemem.to_pandas(), x="Perturb Freq", y="Min Convergence Time", color="Is SVD", 
+        line_dash="Filter Size", markers=True,
+        title="Convergence Time vs Perturbation Frequency by Filter Size").show()
 
+# %%
+print(data.filter(
+    pl.col("Filter Size") == 200,
+    pl.col("Is SVD") == True,
+    pl.col("Perturb Freq") == 14.0,
+    pl.col("Convergence Time").is_not_null()
+).sort(
+    pl.col("Convergence Time")
+)
+)
 # %%
