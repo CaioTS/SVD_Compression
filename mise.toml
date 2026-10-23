@@ -1,0 +1,3 @@
+# ~/code/client-project/mise.toml
+[env]
+CLAUDE_CONFIG_DIR = "{{env.HOME}}/.claudedudu"
