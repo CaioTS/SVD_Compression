@@ -1,0 +1,14 @@
+# Executables
+*.out
+
+
+# Debug files
+*.fst
+*.vcd
+
+__pycache__/
+*.pyc
+
+
+FIR_wsecimpulse/*
+
