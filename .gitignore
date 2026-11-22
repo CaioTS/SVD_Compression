@@ -12,3 +12,8 @@ __pycache__/
 
 FIR_wsecimpulse/*
 
+# Byte-compiled / optimized / DLL files
+__pycache__
+.venv
+
+CompressaoIFIR/dados
