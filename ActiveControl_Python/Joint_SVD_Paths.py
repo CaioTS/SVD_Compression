@@ -23,6 +23,7 @@ are not part of the sum of exponentials (feedthrough / finite-difference
 transient), and the stacked matrix is built without zero padding. With this,
 the tail has rank exactly 2M.
 """
+import os
 import numpy as np
 import scipy.linalg as sla
 from scipy.signal import lfilter
@@ -31,20 +32,32 @@ from plotly.subplots import make_subplots
 
 from CantileverBeam import CantileverBeam
 
-# %% General Definitions (same configuration as SVD_Methodology.pdf):
+os.makedirs("figs", exist_ok=True)
 
-fs = 416.0 # Sampling frequency in Hertz
+def save_fig(fig, path, show=True):
+    """Same template as SVD_FPGA/python/methodology.py: removes the title (the
+    dissertation uses the LaTeX caption), writes the figure and shows it.
+    Subplot titles (panel labels) are kept. PDF export needs kaleido
+    (e.g. `uv run --with kaleido python Joint_SVD_Paths.py`)."""
+    fig.update_layout(title_text=None, margin=dict(t=40))
+    fig.write_image(path)
+    if show:
+        fig.show()
+
+# %% General Definitions (same configuration as SVD_FPGA/python/methodology.py):
+
+fs = 832.0 # Sampling frequency in Hertz
 nmodes = 3
 dampingfactors = [0.01] * nmodes
 noisestd = 0.0 # Measurement noise in the impulse responses (0.0 for exact rank)
 
-nsettle = 1388 # FIR length for 5% settling (Table 4 of the PDF)
+nsettle = 2751 # FIR length for 5% settling at fs = 832 Hz (eq. n-coef)
 headlen = 2 # Direct FIR taps for the non-modal initial samples
 rank = 2 * nmodes # Number of SVD branches (2 per mode)
 
 # %% Beam definitions:
 
-npoints = 101 # Number of points in the beam (0.58 cm spacing)
+npoints = 100 # Number of points in the beam (same as methodology.py)
 beamlength = 0.58 # Length of the beam in meters
 beamwidth = 0.05 # Width of the beam in meters
 beamthickness = 0.006 # Thickness of the beam in meters
@@ -70,9 +83,21 @@ def impulse_responses(beam, nsamples):
 
 # Stacked matrix dimensions. The tail is extended with real samples up to L*K
 # (no zero padding), so that every column is a segment of the same exponentials.
+# Same rule as choose_RC(mode="extend") in SVD_FPGA/python/aux_functions.py:
+# smallest L*K >= ntail with L >= K and L/K <= 1.5 (ties: smallest L + K).
+def choose_LK(n, max_ratio=1.5):
+    best = None
+    for k in range(int(np.ceil(np.sqrt(n / max_ratio))), int(np.ceil(np.sqrt(n))) + 1):
+        l = int(np.ceil(n / k))
+        if l < k or l / k > max_ratio:
+            continue
+        key = (l * k - n, l + k)
+        if best is None or key < best[0]:
+            best = (key, l, k)
+    return best[1], best[2]
+
 ntail = nsettle - headlen
-L = int(np.ceil(np.sqrt(ntail)))
-K = int(np.ceil(ntail / L))
+L, K = choose_LK(ntail) # 55 x 50 at fs = 832 Hz
 nfir = headlen + L * K
 
 cbeam = CantileverBeam(npoints=npoints, width=beamwidth, thickness=beamthickness,
@@ -280,41 +305,86 @@ print(f"\n{'Implementation':38s} {'Coefficients':>12s} {'MACs/sample':>12s}")
 for name, (ncoef, nmac) in cost.items():
     print(f"{name:38s} {ncoef:12d} {nmac:12d}")
 
+# Same metric as the dissertation (eq. recursos-fir and recursos-svd), for the
+# two paths together, each path filtering its own input signal. The head adds
+# d coefficients, 2d memory elements and 2d operations per path.
+def res_branches(B, extra_coefs=0, extra_ops=0):
+    """(N_C, N_M, N_O) of one FIR-SVD path: B branches, head, extra core."""
+    nc = B * (L + K) + headlen
+    nm = L * K + B * (L + K) + K + B * L + 2 * headlen
+    no = 2 * B * (L + K) + (B - 1) + 2 * headlen
+    return nc + extra_coefs, nm + extra_coefs, no + extra_ops
+
+nshared = rank * (L + K)
+fir1 = (nsettle, 2 * nsettle, 2 * nsettle - 1)
+ind1 = res_branches(rank)
+core_ops = rank**2 + rank * (rank - 1) # r x r core: r^2 mult., r(r-1) sums
+joint_core = [res_branches(rank, rank**2, core_ops)[i] * 2 - (nshared if i < 2 else 0) for i in range(3)]
+joint_modal = [ind1[i] * 2 + nG - (nshared if i < 2 else 0) for i in range(3)]
+resources = {
+    "FIR": [2 * v for v in fir1],
+    "Individual FIR-SVD": [2 * v for v in ind1],
+    "Joint SVD (shared U, V + cores)": joint_core,
+    "Joint modal (shared A, B + G)": joint_modal,
+}
+print(f"\nResources, dissertation metric (two paths together):")
+print(f"{'Implementation':34s} {'N_C':>7s} {'N_M':>7s} {'N_O':>7s}")
+for name, (nc, nm, no) in resources.items():
+    print(f"{name:34s} {nc:7d} {nm:7d} {no:7d}")
+print("Subspace check: max principal angle U_s x U_f = "
+      f"{np.degrees(sla.subspace_angles(Us, Uf).max()):.1e} deg, "
+      f"V_s x V_f = {np.degrees(sla.subspace_angles(Vs, Vf).max()):.1e} deg")
+
 
 # %% Singular values: individual vs. joint, with and without the head split.
+
+path_pt = {"Secondary": "Caminho secundário", "Feedback": "Caminho de feedback"}
+pathcolors = {"Secondary": "#1f77b4", "Feedback": "#ff7f0e", "Joint": "#2ca02c"}
 
 def normsv(X):
     s = np.linalg.svd(X, compute_uv=False)
     return s / s[0]
 
 def stack_padded(h):
-    # Stacking used in the PDF: no head split, zero padding up to L*K.
-    Lp = int(np.ceil(np.sqrt(nsettle)))
-    Kp = int(np.ceil(nsettle / Lp))
+    # Previous stacking (choose_RC "pad"): no head split, zero padding up to L*K.
+    Kp = int(np.sqrt(nsettle))
+    Lp = int(np.ceil(nsettle / Kp))
     x = np.zeros(Lp * Kp)
     x[:nsettle] = h[:nsettle]
     return x.reshape(Kp, Lp).T
 
-nsv = 14
+nsv = 12
 idx = np.arange(1, nsv + 1)
-fig = go.Figure()
+Xs_p, Xf_p = stack_padded(hs), stack_padded(hf)
 svsets = {
-    "S, individual (PDF stacking)": normsv(stack_padded(hs)),
-    "F, individual (PDF stacking)": normsv(stack_padded(hf)),
-    "S + F joint (PDF stacking)": normsv(np.hstack([stack_padded(hs) / np.linalg.norm(hs[:nsettle]),
-                                                    stack_padded(hf) / np.linalg.norm(hf[:nsettle])])),
-    "S, individual (head + tail)": normsv(Xs),
-    "F, individual (head + tail)": normsv(Xf),
-    "S + F joint (head + tail)": normsv(np.hstack([Xs_n, Xf_n])),
+    "padded": {
+        "Secondary": normsv(Xs_p),
+        "Feedback": normsv(Xf_p),
+        "Joint": normsv(np.hstack([Xs_p / np.linalg.norm(Xs_p), Xf_p / np.linalg.norm(Xf_p)])),
+    },
+    "head": {
+        "Secondary": normsv(Xs),
+        "Feedback": normsv(Xf),
+        "Joint": normsv(np.hstack([Xs_n, Xf_n])),
+    },
 }
-for name, s in svsets.items():
-    fig.add_trace(go.Scatter(x=idx, y=np.maximum(s[:nsv], 1e-17), mode="lines+markers", name=name,
-                             line=dict(dash="dot" if "PDF" in name else "solid")))
-fig.add_vline(x=rank + 0.5, line_dash="dash", line_color="gray")
-fig.update_layout(title="Normalized singular values: individual vs. joint",
-                  xaxis_title="Singular value index", yaxis_title="sigma_i / sigma_1",
-                  yaxis_type="log", yaxis=dict(range=[-16, 0.5]), width=800, height=450)
-fig.show()
+svnames = {"Secondary": "Secundário", "Feedback": "<i>Feedback</i>", "Joint": "Conjunta [X<sub>s</sub> X<sub>f</sub>]"}
+fig = make_subplots(rows=1, cols=2, shared_yaxes=True,
+                    subplot_titles=["Resposta completa, com zeros",
+                                    f"Cabeça (d = {headlen}) + cauda, sem zeros"])
+for col, key in enumerate(["padded", "head"], 1):
+    for name, s in svsets[key].items():
+        fig.add_trace(go.Scatter(x=idx, y=np.maximum(s[:nsv], 1e-17), mode="lines+markers",
+                                 name=svnames[name], legendgroup=name, showlegend=(col == 1),
+                                 line=dict(color=pathcolors[name], width=3 if name == "Joint" else 1.5,
+                                           dash="dash" if name == "Joint" else "solid"),
+                                 marker=dict(color=pathcolors[name])), row=1, col=col)
+    fig.add_vline(x=rank + 0.5, line=dict(color="gray", dash="dot"), row=1, col=col)
+fig.update_yaxes(type="log", range=[-17, 0.5])
+fig.update_yaxes(title_text="σ<sub>k</sub> / σ<sub>1</sub>", row=1, col=1)
+fig.update_xaxes(title_text="Índice k")
+fig.update_layout(template="plotly_white", width=1000, height=450)
+save_fig(fig, "figs/Joint_S_values.pdf")
 
 
 # %% Frequency responses of both paths and errors of the joint compression:
@@ -323,43 +393,55 @@ nfft = 1 << 15
 freqs = np.fft.rfftfreq(nfft, 1/fs)
 # The relative complex error 20*log10(|Ha - H| / |H|) includes magnitude and
 # phase errors and keeps the curves distinguishable even when they are tiny.
-fig = make_subplots(rows=3, cols=1, shared_xaxes=True,
-                    subplot_titles=("Magnitude (dB)", "Relative error |H_c - H| / |H| (dB)",
-                                    "Phase error of compressed filters (degrees)"))
-pathcolors = {"Secondary": "#1f77b4", "Feedback": "#ff7f0e"}
+# Bins where the error is exactly zero are floored at 1e-16 (-320 dB).
+fig = make_subplots(rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.07,
+                    subplot_titles=("Magnitude",
+                                    "Erro relativo |H<sub>c</sub> − H| / |H|",
+                                    "Erro de fase"))
+labpt = {"individual": "SVD individual", "joint": "SVD conjunta"}
 for name, h, hind, hjoint in [("Secondary", hs, hs_ind, hs_joint), ("Feedback", hf, hf_ind, hf_joint)]:
     H = np.fft.rfft(h, nfft)
-    fig.add_trace(go.Scatter(x=freqs, y=20*np.log10(np.abs(H)), name=f"{name} (FIR)",
+    fig.add_trace(go.Scatter(x=freqs, y=20*np.log10(np.abs(H)), name=f"{path_pt[name]} (FIR)",
                              line=dict(color=pathcolors[name], width=6), opacity=0.35), row=1, col=1)
     for lab, ha, dash in [("individual", hind, "dash"), ("joint", hjoint, "dot")]:
         Ha = np.fft.rfft(ha, nfft)
-        style = dict(color=pathcolors[name], dash=dash)
-        fig.add_trace(go.Scatter(x=freqs, y=20*np.log10(np.abs(Ha)), name=f"{name}, {lab}",
+        style = dict(color=pathcolors[name], dash=dash, width=1.5)
+        fig.add_trace(go.Scatter(x=freqs, y=20*np.log10(np.abs(Ha)), name=f"{path_pt[name]}, {labpt[lab]}",
                                  legendgroup=f"{name}{lab}", line=style, showlegend=False),
                       row=1, col=1)
-        fig.add_trace(go.Scatter(x=freqs, y=20*np.log10(np.abs(Ha - H) / np.abs(H) + 1e-300),
-                                 name=f"{name}, {lab}", legendgroup=f"{name}{lab}", line=style),
-                      row=2, col=1)
-        fig.add_trace(go.Scatter(x=freqs, y=np.degrees(np.angle(Ha / H)), name=f"{name}, {lab}",
+        fig.add_trace(go.Scatter(x=freqs, y=20*np.log10(np.maximum(np.abs(Ha - H) / np.abs(H), 1e-16)),
+                                 name=f"{path_pt[name]}, {labpt[lab]}", legendgroup=f"{name}{lab}",
+                                 line=style), row=2, col=1)
+        fig.add_trace(go.Scatter(x=freqs, y=np.degrees(np.angle(Ha / H)), name=f"{path_pt[name]}, {labpt[lab]}",
                                  legendgroup=f"{name}{lab}", line=style, showlegend=False),
                       row=3, col=1)
-fig.update_xaxes(title_text="Frequency (Hz)", row=3, col=1)
-fig.update_layout(title=f"Joint SVD compression, rank {rank}", width=900, height=850)
-fig.show()
+fig.update_yaxes(title_text="dB", row=1, col=1)
+fig.update_yaxes(title_text="dB", row=2, col=1)
+fig.update_yaxes(title_text="Graus", exponentformat="power", row=3, col=1)
+fig.update_yaxes(range=[-330, -225], row=2, col=1) # floor at 1e-16 (-320 dB)
+fig.update_xaxes(title_text="Frequência (Hz)", row=3, col=1)
+fig.update_layout(template="plotly_white", width=900, height=850)
+save_fig(fig, "figs/Joint_freq_error.pdf")
 
 
 # %% Shared modal branches and the gain applied by each path:
 
+H = np.fft.rfft(hs, nfft)
 fig = go.Figure()
+fig.add_trace(go.Scatter(x=freqs, y=20*np.log10(np.abs(np.fft.rfft(hs[headlen:], nfft))),
+                         name="Cauda do caminho secundário", line=dict(color="lightgray", width=5)))
 for grp in groups:
     gk = np.zeros(L * K)
     for i in grp:
         gk += unstack(np.outer(A[:, i], B[:, i]))
     Gk = np.fft.rfft(gk, nfft)
-    fig.add_trace(go.Scatter(x=freqs, y=20*np.log10(np.abs(Gk)),
-                             name=f"Branches {[i+1 for i in grp]}, F gain = {np.round(np.diag(G)[grp], 3)}"))
-fig.update_layout(title="Modal branches shared by the secondary and feedback paths",
-                  xaxis_title="Frequency (Hz)", yaxis_title="Magnitude (dB)", width=800, height=450)
-fig.show()
+    fpk = freqgrid[np.argmax(np.abs(np.fft.rfft(gk, 1 << 14)))]
+    fig.add_trace(go.Scatter(x=freqs, y=20*np.log10(np.abs(Gk)), line=dict(width=1.5),
+                             name=f"Ramos {', '.join(str(i+1) for i in grp)} ({fpk:.1f} Hz), "
+                                  f"ganho do <i>feedback</i> = {np.diag(G)[grp[0]]:.3f}".replace(".", ",")))
+fig.update_layout(xaxis_title="Frequência (Hz)", yaxis_title="Magnitude (dB)",
+                  template="plotly_white", width=800, height=450,
+                  legend=dict(x=0.99, y=0.99, xanchor="right", bgcolor="rgba(255,255,255,0.8)"))
+save_fig(fig, "figs/Joint_modal_branches.pdf")
 
 # %%
